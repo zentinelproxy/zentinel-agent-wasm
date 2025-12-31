@@ -1,0 +1,6 @@
+/target
+/examples/wasm-module/target
+Cargo.lock
+*.swp
+*.swo
+.DS_Store
