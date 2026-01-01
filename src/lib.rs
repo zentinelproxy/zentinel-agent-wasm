@@ -31,7 +31,7 @@ use tracing::{debug, error, info, warn};
 use wasmtime::*;
 
 use sentinel_agent_protocol::{
-    AgentHandler, AgentResponse, AuditMetadata, HeaderOp, RequestHeadersEvent,
+    AgentHandler, AgentResponse, AuditMetadata, ConfigureEvent, HeaderOp, RequestHeadersEvent,
     ResponseHeadersEvent,
 };
 
@@ -72,6 +72,19 @@ pub struct WasmResponse {
     pub status: u16,
     pub correlation_id: String,
     pub headers: HashMap<String, String>,
+}
+
+/// Configuration JSON for Wasm agent
+///
+/// Note: The Wasm module itself cannot be changed dynamically,
+/// but pool size and fail-open behavior can be reconfigured.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct WasmConfigJson {
+    /// Number of Wasm instances to keep in the pool
+    pub pool_size: usize,
+    /// Whether to allow requests when Wasm execution fails
+    pub fail_open: bool,
 }
 
 /// Wasm module instance with exported functions
@@ -367,6 +380,37 @@ impl WasmAgent {
 
 #[async_trait]
 impl AgentHandler for WasmAgent {
+    async fn on_configure(&self, event: ConfigureEvent) -> AgentResponse {
+        info!(
+            agent_id = %event.agent_id,
+            "Received configuration event"
+        );
+
+        // Parse the configuration
+        let config: WasmConfigJson = match serde_json::from_value(event.config) {
+            Ok(c) => c,
+            Err(e) => {
+                error!(error = %e, "Failed to parse Wasm agent configuration");
+                return AgentResponse::block(
+                    500,
+                    Some(format!("Invalid Wasm agent configuration: {}", e)),
+                );
+            }
+        };
+
+        // Note: The Wasm module itself cannot be changed dynamically.
+        // We can only update pool_size and fail_open settings.
+        // These require interior mutability which is not currently implemented,
+        // so we just log the configuration for now.
+        info!(
+            pool_size = config.pool_size,
+            fail_open = config.fail_open,
+            "Wasm agent configuration received (note: module cannot be changed dynamically)"
+        );
+
+        AgentResponse::default_allow()
+    }
+
     async fn on_request_headers(&self, event: RequestHeadersEvent) -> AgentResponse {
         let correlation_id = event.metadata.correlation_id.clone();
 
