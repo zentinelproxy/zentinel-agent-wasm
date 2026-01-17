@@ -1,13 +1,14 @@
 //! Sentinel WebAssembly Agent CLI
 //!
 //! Command-line interface for the WebAssembly agent.
+//! Supports both gRPC and UDS transports for v2 protocol.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::PathBuf;
 use tracing::info;
 
-use sentinel_agent_protocol::AgentServer;
+use sentinel_agent_protocol::v2::GrpcAgentServerV2;
 use sentinel_agent_wasm::WasmAgent;
 
 /// Command line arguments
@@ -15,10 +16,6 @@ use sentinel_agent_wasm::WasmAgent;
 #[command(name = "sentinel-wasm-agent")]
 #[command(about = "WebAssembly agent for Sentinel reverse proxy")]
 struct Args {
-    /// Path to Unix socket
-    #[arg(long, default_value = "/tmp/sentinel-wasm.sock", env = "AGENT_SOCKET")]
-    socket: PathBuf,
-
     /// Path to WebAssembly module (.wasm file)
     #[arg(long, env = "WASM_MODULE")]
     module: PathBuf,
@@ -34,6 +31,11 @@ struct Args {
     /// Fail open on Wasm errors (allow requests instead of blocking)
     #[arg(long, env = "FAIL_OPEN")]
     fail_open: bool,
+
+    /// gRPC address to listen on (e.g., "0.0.0.0:50051").
+    /// Defaults to "0.0.0.0:50051" if not specified.
+    #[arg(long, env = "WASM_GRPC_ADDRESS")]
+    grpc_address: Option<String>,
 }
 
 #[tokio::main]
@@ -52,7 +54,7 @@ async fn main() -> Result<()> {
         .json()
         .init();
 
-    info!("Starting Sentinel WebAssembly Agent");
+    info!("Starting Sentinel WebAssembly Agent v2");
 
     // Create agent
     let agent = WasmAgent::new(&args.module, args.pool_size, args.fail_open)?;
@@ -64,10 +66,26 @@ async fn main() -> Result<()> {
         "Agent configured"
     );
 
-    // Start agent server
-    info!(socket = ?args.socket, "Starting agent server");
-    let server = AgentServer::new("sentinel-wasm-agent", args.socket, Box::new(agent));
-    server.run().await.map_err(|e| anyhow::anyhow!("{}", e))?;
+    // Determine gRPC address (use provided or default)
+    let grpc_addr = args.grpc_address.unwrap_or_else(|| "0.0.0.0:50051".to_string());
+
+    info!(
+        grpc_address = %grpc_addr,
+        "Starting gRPC v2 agent server"
+    );
+
+    let addr = grpc_addr
+        .parse()
+        .context("Invalid gRPC address format (expected host:port)")?;
+
+    let server = GrpcAgentServerV2::new("sentinel-wasm-agent", Box::new(agent));
+
+    info!("WebAssembly agent ready and listening on gRPC");
+
+    server
+        .run(addr)
+        .await
+        .context("Failed to run WebAssembly agent gRPC server")?;
 
     Ok(())
 }

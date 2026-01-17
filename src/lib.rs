@@ -25,14 +25,18 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 use wasmtime::*;
 
+use sentinel_agent_protocol::v2::{
+    AgentCapabilities, AgentFeatures, AgentHandlerV2, AgentLimits, CounterMetric, DrainReason,
+    GaugeMetric, HealthStatus, MetricsReport, ShutdownReason,
+};
 use sentinel_agent_protocol::{
-    AgentHandler, AgentResponse, AuditMetadata, ConfigureEvent, HeaderOp, RequestHeadersEvent,
-    ResponseHeadersEvent,
+    AgentResponse, AuditMetadata, EventType, HeaderOp, RequestHeadersEvent, ResponseHeadersEvent,
 };
 
 /// Result from Wasm module execution
@@ -104,6 +108,14 @@ pub struct WasmAgent {
     instance_pool: Arc<Mutex<Vec<WasmInstance>>>,
     pool_size: usize,
     fail_open: bool,
+    /// Metrics: total requests processed.
+    requests_total: AtomicU64,
+    /// Metrics: total requests blocked.
+    requests_blocked: AtomicU64,
+    /// Metrics: total Wasm execution errors.
+    wasm_errors: AtomicU64,
+    /// Whether the agent is draining (not accepting new requests).
+    draining: Arc<RwLock<bool>>,
 }
 
 // WasmAgent is Send + Sync because we protect instance access with Mutex
@@ -136,6 +148,10 @@ impl WasmAgent {
             instance_pool: Arc::new(Mutex::new(Vec::with_capacity(pool_size))),
             pool_size,
             fail_open,
+            requests_total: AtomicU64::new(0),
+            requests_blocked: AtomicU64::new(0),
+            wasm_errors: AtomicU64::new(0),
+            draining: Arc::new(RwLock::new(false)),
         };
 
         Ok(agent)
@@ -356,6 +372,8 @@ impl WasmAgent {
 
     /// Handle execution error
     fn handle_error(&self, error: anyhow::Error, correlation_id: &str) -> AgentResponse {
+        self.wasm_errors.fetch_add(1, Ordering::Relaxed);
+
         error!(
             correlation_id = correlation_id,
             error = %error,
@@ -369,6 +387,7 @@ impl WasmAgent {
                 ..Default::default()
             })
         } else {
+            self.requests_blocked.fetch_add(1, Ordering::Relaxed);
             AgentResponse::block(500, Some("Wasm Error".to_string())).with_audit(AuditMetadata {
                 tags: vec!["wasm-error".to_string()],
                 reason_codes: vec![error.to_string()],
@@ -376,42 +395,54 @@ impl WasmAgent {
             })
         }
     }
+
+    /// Check if the agent is draining.
+    async fn is_draining(&self) -> bool {
+        *self.draining.read().await
+    }
 }
 
 #[async_trait]
-impl AgentHandler for WasmAgent {
-    async fn on_configure(&self, event: ConfigureEvent) -> AgentResponse {
-        info!(
-            agent_id = %event.agent_id,
-            "Received configuration event"
-        );
-
-        // Parse the configuration
-        let config: WasmConfigJson = match serde_json::from_value(event.config) {
-            Ok(c) => c,
-            Err(e) => {
-                error!(error = %e, "Failed to parse Wasm agent configuration");
-                return AgentResponse::block(
-                    500,
-                    Some(format!("Invalid Wasm agent configuration: {}", e)),
-                );
-            }
-        };
-
-        // Note: The Wasm module itself cannot be changed dynamically.
-        // We can only update pool_size and fail_open settings.
-        // These require interior mutability which is not currently implemented,
-        // so we just log the configuration for now.
-        info!(
-            pool_size = config.pool_size,
-            fail_open = config.fail_open,
-            "Wasm agent configuration received (note: module cannot be changed dynamically)"
-        );
-
-        AgentResponse::default_allow()
+impl AgentHandlerV2 for WasmAgent {
+    /// Return agent capabilities for v2 protocol.
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities::new(
+            "wasm-agent",
+            "WebAssembly Agent",
+            env!("CARGO_PKG_VERSION"),
+        )
+        .with_event(EventType::RequestHeaders)
+        .with_event(EventType::ResponseHeaders)
+        .with_features(AgentFeatures {
+            streaming_body: false,
+            websocket: false,
+            guardrails: false,
+            config_push: true,
+            metrics_export: true,
+            concurrent_requests: self.pool_size as u32,
+            cancellation: false,
+            flow_control: false,
+            health_reporting: true,
+        })
+        .with_limits(AgentLimits {
+            max_body_size: 10 * 1024 * 1024, // 10MB
+            max_concurrency: self.pool_size as u32,
+            preferred_chunk_size: 64 * 1024,
+            max_memory: None,
+            max_processing_time_ms: Some(5000),
+        })
     }
 
+    /// Handle a request headers event.
     async fn on_request_headers(&self, event: RequestHeadersEvent) -> AgentResponse {
+        self.requests_total.fetch_add(1, Ordering::Relaxed);
+
+        // Check if draining
+        if self.is_draining().await {
+            debug!("Agent is draining, allowing request");
+            return AgentResponse::default_allow();
+        }
+
         let correlation_id = event.metadata.correlation_id.clone();
 
         // Acquire instance from pool
@@ -463,7 +494,14 @@ impl AgentHandler for WasmAgent {
                 );
 
                 match serde_json::from_str::<WasmResult>(&output_json) {
-                    Ok(wasm_result) => Self::build_response(wasm_result),
+                    Ok(wasm_result) => {
+                        let response = Self::build_response(wasm_result);
+                        // Track blocked requests
+                        if !matches!(response.decision, sentinel_agent_protocol::Decision::Allow) {
+                            self.requests_blocked.fetch_add(1, Ordering::Relaxed);
+                        }
+                        response
+                    }
                     Err(e) => {
                         warn!(
                             correlation_id = correlation_id,
@@ -479,6 +517,7 @@ impl AgentHandler for WasmAgent {
         }
     }
 
+    /// Handle a response headers event.
     async fn on_response_headers(&self, event: ResponseHeadersEvent) -> AgentResponse {
         let correlation_id = event.correlation_id.clone();
 
@@ -543,5 +582,101 @@ impl AgentHandler for WasmAgent {
             }
             Err(e) => self.handle_error(e, &correlation_id),
         }
+    }
+
+    /// Return current health status.
+    fn health_status(&self) -> HealthStatus {
+        HealthStatus::healthy("wasm-agent".to_string())
+    }
+
+    /// Return metrics report.
+    fn metrics_report(&self) -> Option<MetricsReport> {
+        let mut report = MetricsReport::new("wasm-agent", 10_000);
+
+        report.counters.push(CounterMetric::new(
+            "wasm_agent_requests_total",
+            self.requests_total.load(Ordering::Relaxed),
+        ));
+
+        report.counters.push(CounterMetric::new(
+            "wasm_agent_requests_blocked_total",
+            self.requests_blocked.load(Ordering::Relaxed),
+        ));
+
+        report.counters.push(CounterMetric::new(
+            "wasm_agent_errors_total",
+            self.wasm_errors.load(Ordering::Relaxed),
+        ));
+
+        // Current pool size
+        let pool_available = {
+            match self.instance_pool.try_lock() {
+                Ok(pool) => pool.len() as f64,
+                Err(_) => 0.0,
+            }
+        };
+        report.gauges.push(GaugeMetric::new(
+            "wasm_agent_pool_available",
+            pool_available,
+        ));
+
+        Some(report)
+    }
+
+    /// Handle a configuration update from the proxy.
+    async fn on_configure(&self, config: serde_json::Value, version: Option<String>) -> bool {
+        info!(
+            config_version = ?version,
+            "Received configuration update"
+        );
+
+        // Parse the configuration
+        let parsed: Result<WasmConfigJson, _> = serde_json::from_value(config.clone());
+        match parsed {
+            Ok(wasm_config) => {
+                // Note: The Wasm module itself cannot be changed dynamically.
+                // We can only update pool_size and fail_open settings.
+                // These require interior mutability which is not currently implemented,
+                // so we just log the configuration for now.
+                info!(
+                    pool_size = wasm_config.pool_size,
+                    fail_open = wasm_config.fail_open,
+                    "Wasm agent configuration received (note: module cannot be changed dynamically)"
+                );
+                true
+            }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    config = %config,
+                    "Failed to parse Wasm agent configuration"
+                );
+                false
+            }
+        }
+    }
+
+    /// Handle a shutdown request.
+    async fn on_shutdown(&self, reason: ShutdownReason, grace_period_ms: u64) {
+        info!(
+            reason = ?reason,
+            grace_period_ms = grace_period_ms,
+            "Received shutdown request"
+        );
+
+        // Set draining to stop accepting new requests
+        *self.draining.write().await = true;
+    }
+
+    /// Handle a drain request.
+    async fn on_drain(&self, duration_ms: u64, reason: DrainReason) {
+        info!(
+            duration_ms = duration_ms,
+            reason = ?reason,
+            "Received drain request"
+        );
+
+        // Set draining flag
+        *self.draining.write().await = true;
     }
 }

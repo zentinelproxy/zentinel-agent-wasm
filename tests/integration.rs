@@ -1,6 +1,6 @@
-//! Integration tests for the WebAssembly agent using sentinel-agent-protocol.
+//! Integration tests for the WebAssembly agent using sentinel-agent-protocol v2.
 //!
-//! These tests spin up an actual AgentServer and connect via AgentClient
+//! These tests spin up an actual gRPC v2 server and connect via AgentClientV2
 //! to verify the full protocol flow.
 //!
 //! Note: Tests require the example Wasm module to be built first:
@@ -8,15 +8,13 @@
 //! cd examples/wasm-module && cargo build --target wasm32-unknown-unknown --release
 //! ```
 
-use sentinel_agent_protocol::{
-    AgentClient, AgentServer, Decision, EventType, HeaderOp, RequestHeadersEvent, RequestMetadata,
-    ResponseHeadersEvent,
-};
+use sentinel_agent_protocol::v2::{AgentClientV2, GrpcAgentServerV2};
+use sentinel_agent_protocol::{Decision, HeaderOp, RequestHeadersEvent, RequestMetadata, ResponseHeadersEvent};
 use sentinel_agent_wasm::WasmAgent;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
-use tempfile::tempdir;
 
 /// Get path to the example Wasm module
 fn example_module_path() -> PathBuf {
@@ -29,34 +27,45 @@ fn module_exists() -> bool {
     example_module_path().exists()
 }
 
-/// Helper to start a Wasm agent server and return the socket path
-async fn start_test_server(fail_open: bool) -> Option<(tempfile::TempDir, std::path::PathBuf)> {
+/// Helper to start a Wasm agent gRPC server and return the address
+async fn start_test_server(fail_open: bool) -> Option<SocketAddr> {
     if !module_exists() {
         return None;
     }
 
-    let dir = tempdir().expect("Failed to create temp dir");
-    let socket_path = dir.path().join("wasm-test.sock");
-
     let agent =
         WasmAgent::new(example_module_path(), 2, fail_open).expect("Failed to create agent");
-    let server = AgentServer::new("test-wasm", socket_path.clone(), Box::new(agent));
+
+    // Bind to a random available port
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind");
+    let addr = listener.local_addr().expect("Failed to get local addr");
+    drop(listener);
+
+    let server = GrpcAgentServerV2::new("test-wasm", Box::new(agent));
 
     tokio::spawn(async move {
-        let _ = server.run().await;
+        let _ = server.run(addr).await;
     });
 
     // Give server time to start
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    Some((dir, socket_path))
+    Some(addr)
 }
 
 /// Create a client connected to the test server
-async fn create_client(socket_path: &std::path::Path) -> AgentClient {
-    AgentClient::unix_socket("test-client", socket_path, Duration::from_secs(5))
-        .await
-        .expect("Failed to connect to agent")
+async fn create_client(addr: SocketAddr) -> AgentClientV2 {
+    let client = AgentClientV2::new(
+        "test-client",
+        format!("http://{}", addr),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("Failed to create client");
+
+    client.connect().await.expect("Failed to connect");
+
+    client
 }
 
 /// Create a basic request metadata
@@ -125,15 +134,16 @@ fn get_block_status(decision: &Decision) -> Option<u16> {
 
 #[tokio::test]
 async fn test_allow_clean_request() {
-    let Some((_dir, socket_path)) = start_test_server(false).await else {
+    let Some(addr) = start_test_server(false).await else {
         eprintln!("Skipping test: example module not built");
         return;
     };
-    let mut client = create_client(&socket_path).await;
+    let client = create_client(addr).await;
 
     let event = make_request_headers("GET", "/api/users", HashMap::new());
+    let correlation_id = event.metadata.correlation_id.clone();
     let response = client
-        .send_event(EventType::RequestHeaders, &event)
+        .send_request_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
@@ -149,15 +159,16 @@ async fn test_allow_clean_request() {
 
 #[tokio::test]
 async fn test_block_admin_without_auth() {
-    let Some((_dir, socket_path)) = start_test_server(false).await else {
+    let Some(addr) = start_test_server(false).await else {
         eprintln!("Skipping test: example module not built");
         return;
     };
-    let mut client = create_client(&socket_path).await;
+    let client = create_client(addr).await;
 
     let event = make_request_headers("GET", "/admin/settings", HashMap::new());
+    let correlation_id = event.metadata.correlation_id.clone();
     let response = client
-        .send_event(EventType::RequestHeaders, &event)
+        .send_request_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
@@ -167,11 +178,11 @@ async fn test_block_admin_without_auth() {
 
 #[tokio::test]
 async fn test_allow_admin_with_auth() {
-    let Some((_dir, socket_path)) = start_test_server(false).await else {
+    let Some(addr) = start_test_server(false).await else {
         eprintln!("Skipping test: example module not built");
         return;
     };
-    let mut client = create_client(&socket_path).await;
+    let client = create_client(addr).await;
 
     let mut headers = HashMap::new();
     headers.insert(
@@ -180,8 +191,9 @@ async fn test_allow_admin_with_auth() {
     );
 
     let event = make_request_headers("GET", "/admin/settings", headers);
+    let correlation_id = event.metadata.correlation_id.clone();
     let response = client
-        .send_event(EventType::RequestHeaders, &event)
+        .send_request_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
@@ -194,15 +206,16 @@ async fn test_allow_admin_with_auth() {
 
 #[tokio::test]
 async fn test_block_sql_injection_quote() {
-    let Some((_dir, socket_path)) = start_test_server(false).await else {
+    let Some(addr) = start_test_server(false).await else {
         eprintln!("Skipping test: example module not built");
         return;
     };
-    let mut client = create_client(&socket_path).await;
+    let client = create_client(addr).await;
 
     let event = make_request_headers("GET", "/api/users?id=1'--", HashMap::new());
+    let correlation_id = event.metadata.correlation_id.clone();
     let response = client
-        .send_event(EventType::RequestHeaders, &event)
+        .send_request_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
@@ -212,19 +225,20 @@ async fn test_block_sql_injection_quote() {
 
 #[tokio::test]
 async fn test_block_sql_injection_union() {
-    let Some((_dir, socket_path)) = start_test_server(false).await else {
+    let Some(addr) = start_test_server(false).await else {
         eprintln!("Skipping test: example module not built");
         return;
     };
-    let mut client = create_client(&socket_path).await;
+    let client = create_client(addr).await;
 
     let event = make_request_headers(
         "GET",
         "/api/users?id=1+union+select+*+from+users",
         HashMap::new(),
     );
+    let correlation_id = event.metadata.correlation_id.clone();
     let response = client
-        .send_event(EventType::RequestHeaders, &event)
+        .send_request_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
@@ -237,19 +251,20 @@ async fn test_block_sql_injection_union() {
 
 #[tokio::test]
 async fn test_block_xss_script_tag() {
-    let Some((_dir, socket_path)) = start_test_server(false).await else {
+    let Some(addr) = start_test_server(false).await else {
         eprintln!("Skipping test: example module not built");
         return;
     };
-    let mut client = create_client(&socket_path).await;
+    let client = create_client(addr).await;
 
     let event = make_request_headers(
         "GET",
         "/search?q=<script>alert(1)</script>",
         HashMap::new(),
     );
+    let correlation_id = event.metadata.correlation_id.clone();
     let response = client
-        .send_event(EventType::RequestHeaders, &event)
+        .send_request_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
@@ -258,19 +273,20 @@ async fn test_block_xss_script_tag() {
 
 #[tokio::test]
 async fn test_block_xss_javascript_uri() {
-    let Some((_dir, socket_path)) = start_test_server(false).await else {
+    let Some(addr) = start_test_server(false).await else {
         eprintln!("Skipping test: example module not built");
         return;
     };
-    let mut client = create_client(&socket_path).await;
+    let client = create_client(addr).await;
 
     let event = make_request_headers(
         "GET",
         "/redirect?url=javascript:alert(1)",
         HashMap::new(),
     );
+    let correlation_id = event.metadata.correlation_id.clone();
     let response = client
-        .send_event(EventType::RequestHeaders, &event)
+        .send_request_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
@@ -283,15 +299,16 @@ async fn test_block_xss_javascript_uri() {
 
 #[tokio::test]
 async fn test_block_path_traversal_plain() {
-    let Some((_dir, socket_path)) = start_test_server(false).await else {
+    let Some(addr) = start_test_server(false).await else {
         eprintln!("Skipping test: example module not built");
         return;
     };
-    let mut client = create_client(&socket_path).await;
+    let client = create_client(addr).await;
 
     let event = make_request_headers("GET", "/files/../../../etc/passwd", HashMap::new());
+    let correlation_id = event.metadata.correlation_id.clone();
     let response = client
-        .send_event(EventType::RequestHeaders, &event)
+        .send_request_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
@@ -300,19 +317,20 @@ async fn test_block_path_traversal_plain() {
 
 #[tokio::test]
 async fn test_block_path_traversal_encoded() {
-    let Some((_dir, socket_path)) = start_test_server(false).await else {
+    let Some(addr) = start_test_server(false).await else {
         eprintln!("Skipping test: example module not built");
         return;
     };
-    let mut client = create_client(&socket_path).await;
+    let client = create_client(addr).await;
 
     let event = make_request_headers(
         "GET",
         "/files/%2e%2e/%2e%2e/etc/passwd",
         HashMap::new(),
     );
+    let correlation_id = event.metadata.correlation_id.clone();
     let response = client
-        .send_event(EventType::RequestHeaders, &event)
+        .send_request_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
@@ -325,11 +343,11 @@ async fn test_block_path_traversal_encoded() {
 
 #[tokio::test]
 async fn test_block_sqlmap_scanner() {
-    let Some((_dir, socket_path)) = start_test_server(false).await else {
+    let Some(addr) = start_test_server(false).await else {
         eprintln!("Skipping test: example module not built");
         return;
     };
-    let mut client = create_client(&socket_path).await;
+    let client = create_client(addr).await;
 
     let mut headers = HashMap::new();
     headers.insert(
@@ -338,8 +356,9 @@ async fn test_block_sqlmap_scanner() {
     );
 
     let event = make_request_headers("GET", "/api/users", headers);
+    let correlation_id = event.metadata.correlation_id.clone();
     let response = client
-        .send_event(EventType::RequestHeaders, &event)
+        .send_request_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
@@ -348,18 +367,19 @@ async fn test_block_sqlmap_scanner() {
 
 #[tokio::test]
 async fn test_block_nikto_scanner() {
-    let Some((_dir, socket_path)) = start_test_server(false).await else {
+    let Some(addr) = start_test_server(false).await else {
         eprintln!("Skipping test: example module not built");
         return;
     };
-    let mut client = create_client(&socket_path).await;
+    let client = create_client(addr).await;
 
     let mut headers = HashMap::new();
     headers.insert("User-Agent".to_string(), vec!["Nikto/2.1.6".to_string()]);
 
     let event = make_request_headers("GET", "/api/users", headers);
+    let correlation_id = event.metadata.correlation_id.clone();
     let response = client
-        .send_event(EventType::RequestHeaders, &event)
+        .send_request_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
@@ -368,11 +388,11 @@ async fn test_block_nikto_scanner() {
 
 #[tokio::test]
 async fn test_block_nessus_scanner() {
-    let Some((_dir, socket_path)) = start_test_server(false).await else {
+    let Some(addr) = start_test_server(false).await else {
         eprintln!("Skipping test: example module not built");
         return;
     };
-    let mut client = create_client(&socket_path).await;
+    let client = create_client(addr).await;
 
     let mut headers = HashMap::new();
     headers.insert(
@@ -381,8 +401,9 @@ async fn test_block_nessus_scanner() {
     );
 
     let event = make_request_headers("GET", "/api/users", headers);
+    let correlation_id = event.metadata.correlation_id.clone();
     let response = client
-        .send_event(EventType::RequestHeaders, &event)
+        .send_request_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
@@ -391,11 +412,11 @@ async fn test_block_nessus_scanner() {
 
 #[tokio::test]
 async fn test_allow_normal_browser() {
-    let Some((_dir, socket_path)) = start_test_server(false).await else {
+    let Some(addr) = start_test_server(false).await else {
         eprintln!("Skipping test: example module not built");
         return;
     };
-    let mut client = create_client(&socket_path).await;
+    let client = create_client(addr).await;
 
     let mut headers = HashMap::new();
     headers.insert(
@@ -404,8 +425,9 @@ async fn test_allow_normal_browser() {
     );
 
     let event = make_request_headers("GET", "/api/users", headers);
+    let correlation_id = event.metadata.correlation_id.clone();
     let response = client
-        .send_event(EventType::RequestHeaders, &event)
+        .send_request_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
@@ -418,15 +440,16 @@ async fn test_allow_normal_browser() {
 
 #[tokio::test]
 async fn test_adds_wasm_processed_header() {
-    let Some((_dir, socket_path)) = start_test_server(false).await else {
+    let Some(addr) = start_test_server(false).await else {
         eprintln!("Skipping test: example module not built");
         return;
     };
-    let mut client = create_client(&socket_path).await;
+    let client = create_client(addr).await;
 
     let event = make_request_headers("GET", "/api/users", HashMap::new());
+    let correlation_id = event.metadata.correlation_id.clone();
     let response = client
-        .send_event(EventType::RequestHeaders, &event)
+        .send_request_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
@@ -441,15 +464,16 @@ async fn test_adds_wasm_processed_header() {
 
 #[tokio::test]
 async fn test_adds_client_ip_header() {
-    let Some((_dir, socket_path)) = start_test_server(false).await else {
+    let Some(addr) = start_test_server(false).await else {
         eprintln!("Skipping test: example module not built");
         return;
     };
-    let mut client = create_client(&socket_path).await;
+    let client = create_client(addr).await;
 
     let event = make_request_headers("GET", "/api/users", HashMap::new());
+    let correlation_id = event.metadata.correlation_id.clone();
     let response = client
-        .send_event(EventType::RequestHeaders, &event)
+        .send_request_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
@@ -468,15 +492,16 @@ async fn test_adds_client_ip_header() {
 
 #[tokio::test]
 async fn test_response_adds_security_headers() {
-    let Some((_dir, socket_path)) = start_test_server(false).await else {
+    let Some(addr) = start_test_server(false).await else {
         eprintln!("Skipping test: example module not built");
         return;
     };
-    let mut client = create_client(&socket_path).await;
+    let client = create_client(addr).await;
 
     let event = make_response_headers(200, HashMap::new());
+    let correlation_id = event.correlation_id.clone();
     let response = client
-        .send_event(EventType::ResponseHeaders, &event)
+        .send_response_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
@@ -505,15 +530,16 @@ async fn test_response_adds_security_headers() {
 
 #[tokio::test]
 async fn test_response_removes_server_header() {
-    let Some((_dir, socket_path)) = start_test_server(false).await else {
+    let Some(addr) = start_test_server(false).await else {
         eprintln!("Skipping test: example module not built");
         return;
     };
-    let mut client = create_client(&socket_path).await;
+    let client = create_client(addr).await;
 
     let event = make_response_headers(200, HashMap::new());
+    let correlation_id = event.correlation_id.clone();
     let response = client
-        .send_event(EventType::ResponseHeaders, &event)
+        .send_response_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
@@ -536,15 +562,16 @@ async fn test_response_removes_server_header() {
 
 #[tokio::test]
 async fn test_response_includes_status_tag() {
-    let Some((_dir, socket_path)) = start_test_server(false).await else {
+    let Some(addr) = start_test_server(false).await else {
         eprintln!("Skipping test: example module not built");
         return;
     };
-    let mut client = create_client(&socket_path).await;
+    let client = create_client(addr).await;
 
     let event = make_response_headers(200, HashMap::new());
+    let correlation_id = event.correlation_id.clone();
     let response = client
-        .send_event(EventType::ResponseHeaders, &event)
+        .send_response_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
@@ -556,15 +583,16 @@ async fn test_response_includes_status_tag() {
 
 #[tokio::test]
 async fn test_admin_blocked_includes_tag() {
-    let Some((_dir, socket_path)) = start_test_server(false).await else {
+    let Some(addr) = start_test_server(false).await else {
         eprintln!("Skipping test: example module not built");
         return;
     };
-    let mut client = create_client(&socket_path).await;
+    let client = create_client(addr).await;
 
     let event = make_request_headers("GET", "/admin/settings", HashMap::new());
+    let correlation_id = event.metadata.correlation_id.clone();
     let response = client
-        .send_event(EventType::RequestHeaders, &event)
+        .send_request_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
@@ -577,15 +605,16 @@ async fn test_admin_blocked_includes_tag() {
 
 #[tokio::test]
 async fn test_sqli_blocked_includes_tag() {
-    let Some((_dir, socket_path)) = start_test_server(false).await else {
+    let Some(addr) = start_test_server(false).await else {
         eprintln!("Skipping test: example module not built");
         return;
     };
-    let mut client = create_client(&socket_path).await;
+    let client = create_client(addr).await;
 
     let event = make_request_headers("GET", "/api/users?id=1'--", HashMap::new());
+    let correlation_id = event.metadata.correlation_id.clone();
     let response = client
-        .send_event(EventType::RequestHeaders, &event)
+        .send_request_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
@@ -598,19 +627,20 @@ async fn test_sqli_blocked_includes_tag() {
 
 #[tokio::test]
 async fn test_xss_blocked_includes_tag() {
-    let Some((_dir, socket_path)) = start_test_server(false).await else {
+    let Some(addr) = start_test_server(false).await else {
         eprintln!("Skipping test: example module not built");
         return;
     };
-    let mut client = create_client(&socket_path).await;
+    let client = create_client(addr).await;
 
     let event = make_request_headers(
         "GET",
         "/search?q=<script>alert(1)</script>",
         HashMap::new(),
     );
+    let correlation_id = event.metadata.correlation_id.clone();
     let response = client
-        .send_event(EventType::RequestHeaders, &event)
+        .send_request_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
@@ -623,15 +653,16 @@ async fn test_xss_blocked_includes_tag() {
 
 #[tokio::test]
 async fn test_path_traversal_blocked_includes_tag() {
-    let Some((_dir, socket_path)) = start_test_server(false).await else {
+    let Some(addr) = start_test_server(false).await else {
         eprintln!("Skipping test: example module not built");
         return;
     };
-    let mut client = create_client(&socket_path).await;
+    let client = create_client(addr).await;
 
     let event = make_request_headers("GET", "/files/../../../etc/passwd", HashMap::new());
+    let correlation_id = event.metadata.correlation_id.clone();
     let response = client
-        .send_event(EventType::RequestHeaders, &event)
+        .send_request_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
@@ -644,18 +675,19 @@ async fn test_path_traversal_blocked_includes_tag() {
 
 #[tokio::test]
 async fn test_scanner_blocked_includes_tag() {
-    let Some((_dir, socket_path)) = start_test_server(false).await else {
+    let Some(addr) = start_test_server(false).await else {
         eprintln!("Skipping test: example module not built");
         return;
     };
-    let mut client = create_client(&socket_path).await;
+    let client = create_client(addr).await;
 
     let mut headers = HashMap::new();
     headers.insert("User-Agent".to_string(), vec!["sqlmap/1.5.0".to_string()]);
 
     let event = make_request_headers("GET", "/api/users", headers);
+    let correlation_id = event.metadata.correlation_id.clone();
     let response = client
-        .send_event(EventType::RequestHeaders, &event)
+        .send_request_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
