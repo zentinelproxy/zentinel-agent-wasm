@@ -1,6 +1,6 @@
-# sentinel-agent-wasm
+# zentinel-agent-wasm
 
-WebAssembly agent for [Sentinel](https://github.com/raskell-io/sentinel) reverse proxy. Execute custom Wasm modules for request/response processing.
+WebAssembly agent for [Zentinel](https://github.com/zentinelproxy/zentinel) reverse proxy. Execute custom Wasm modules for request/response processing.
 
 ## Features
 
@@ -17,29 +17,29 @@ WebAssembly agent for [Sentinel](https://github.com/raskell-io/sentinel) reverse
 ### From crates.io
 
 ```bash
-cargo install sentinel-agent-wasm
+cargo install zentinel-agent-wasm
 ```
 
 ### From source
 
 ```bash
-git clone https://github.com/raskell-io/sentinel-agent-wasm
-cd sentinel-agent-wasm
+git clone https://github.com/zentinelproxy/zentinel-agent-wasm
+cd zentinel-agent-wasm
 cargo build --release
 ```
 
 ## Usage
 
 ```bash
-sentinel-wasm-agent --socket /var/run/sentinel/wasm.sock \
-  --module /etc/sentinel/modules/security.wasm
+zentinel-wasm-agent --socket /var/run/zentinel/wasm.sock \
+  --module /etc/zentinel/modules/security.wasm
 ```
 
 ### Command Line Options
 
 | Option | Environment Variable | Description | Default |
 |--------|---------------------|-------------|---------|
-| `--socket` | `AGENT_SOCKET` | Unix socket path | `/tmp/sentinel-wasm.sock` |
+| `--socket` | `AGENT_SOCKET` | Unix socket path | `/tmp/zentinel-wasm.sock` |
 | `--module` | `WASM_MODULE` | Wasm module file (.wasm) | (required) |
 | `--pool-size` | `WASM_POOL_SIZE` | Instance pool size | `4` |
 | `--verbose` | `WASM_VERBOSE` | Enable debug logging | `false` |
@@ -214,14 +214,14 @@ The agent maintains a pool of pre-initialized Wasm instances for performance. Co
 - **Pool size 4** (default): Good balance for most workloads
 - **Pool size 8+**: High-concurrency scenarios
 
-## Sentinel Proxy Configuration
+## Zentinel Proxy Configuration
 
 ```kdl
 agents {
     agent "wasm" {
         type "custom"
         transport "unix_socket" {
-            path "/var/run/sentinel/wasm.sock"
+            path "/var/run/zentinel/wasm.sock"
         }
         events ["request_headers", "response_headers"]
         timeout-ms 50
@@ -244,7 +244,7 @@ When `--fail-open` is disabled (default), module errors will:
 
 ## Comparison with Other Agents
 
-| Feature | sentinel-agent-wasm | sentinel-agent-js | sentinel-agent-lua |
+| Feature | zentinel-agent-wasm | zentinel-agent-js | zentinel-agent-lua |
 |---------|--------------------|--------------------|-------------------|
 | Language | Any (Rust, Go, C, etc.) | JavaScript | Lua |
 | Runtime | wasmtime | QuickJS | mlua |
@@ -253,7 +253,7 @@ When `--fail-open` is disabled (default), module errors will:
 | Ecosystem | Wasm-compatible libraries | Limited | Lua libraries |
 | Complexity | Higher (compilation required) | Lower | Lower |
 
-Use `sentinel-agent-wasm` for:
+Use `zentinel-agent-wasm` for:
 - Maximum performance requirements
 - Existing Rust/Go/C code that needs minimal porting
 - Strong isolation between modules

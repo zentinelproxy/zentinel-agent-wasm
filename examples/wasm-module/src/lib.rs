@@ -1,7 +1,7 @@
-//! Example Wasm module for Sentinel
+//! Example Wasm module for Zentinel
 //!
 //! This module demonstrates how to write a Wasm module that works with
-//! the sentinel-agent-wasm runtime.
+//! the zentinel-agent-wasm runtime.
 //!
 //! Build with:
 //! ```bash

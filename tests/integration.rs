@@ -1,4 +1,4 @@
-//! Integration tests for the WebAssembly agent using sentinel-agent-protocol v2.
+//! Integration tests for the WebAssembly agent using zentinel-agent-protocol v2.
 //!
 //! These tests spin up an actual gRPC v2 server and connect via AgentClientV2
 //! to verify the full protocol flow.
@@ -8,9 +8,9 @@
 //! cd examples/wasm-module && cargo build --target wasm32-unknown-unknown --release
 //! ```
 
-use sentinel_agent_protocol::v2::{AgentClientV2, GrpcAgentServerV2};
-use sentinel_agent_protocol::{Decision, HeaderOp, RequestHeadersEvent, RequestMetadata, ResponseHeadersEvent};
-use sentinel_agent_wasm::WasmAgent;
+use zentinel_agent_protocol::v2::{AgentClientV2, GrpcAgentServerV2};
+use zentinel_agent_protocol::{Decision, HeaderOp, RequestHeadersEvent, RequestMetadata, ResponseHeadersEvent};
+use zentinel_agent_wasm::WasmAgent;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;

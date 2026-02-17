@@ -1,6 +1,6 @@
-//! Sentinel WebAssembly Agent Library
+//! Zentinel WebAssembly Agent Library
 //!
-//! A WebAssembly agent for Sentinel reverse proxy that executes Wasm modules
+//! A WebAssembly agent for Zentinel reverse proxy that executes Wasm modules
 //! for request/response processing. Modules can be written in any language
 //! that compiles to WebAssembly (Rust, Go, C, AssemblyScript, etc.).
 //!
@@ -31,11 +31,11 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 use wasmtime::*;
 
-use sentinel_agent_protocol::v2::{
+use zentinel_agent_protocol::v2::{
     AgentCapabilities, AgentFeatures, AgentHandlerV2, AgentLimits, CounterMetric, DrainReason,
     GaugeMetric, HealthStatus, MetricsReport, ShutdownReason,
 };
-use sentinel_agent_protocol::{
+use zentinel_agent_protocol::{
     AgentResponse, AuditMetadata, EventType, HeaderOp, RequestHeadersEvent, ResponseHeadersEvent,
 };
 
@@ -497,7 +497,7 @@ impl AgentHandlerV2 for WasmAgent {
                     Ok(wasm_result) => {
                         let response = Self::build_response(wasm_result);
                         // Track blocked requests
-                        if !matches!(response.decision, sentinel_agent_protocol::Decision::Allow) {
+                        if !matches!(response.decision, zentinel_agent_protocol::Decision::Allow) {
                             self.requests_blocked.fetch_add(1, Ordering::Relaxed);
                         }
                         response

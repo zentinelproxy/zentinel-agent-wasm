@@ -1,4 +1,4 @@
-//! Sentinel WebAssembly Agent CLI
+//! Zentinel WebAssembly Agent CLI
 //!
 //! Command-line interface for the WebAssembly agent.
 //! Supports both gRPC and UDS transports for v2 protocol.
@@ -8,13 +8,13 @@ use clap::Parser;
 use std::path::PathBuf;
 use tracing::info;
 
-use sentinel_agent_protocol::v2::GrpcAgentServerV2;
-use sentinel_agent_wasm::WasmAgent;
+use zentinel_agent_protocol::v2::GrpcAgentServerV2;
+use zentinel_agent_wasm::WasmAgent;
 
 /// Command line arguments
 #[derive(Parser, Debug)]
-#[command(name = "sentinel-wasm-agent")]
-#[command(about = "WebAssembly agent for Sentinel reverse proxy")]
+#[command(name = "zentinel-wasm-agent")]
+#[command(about = "WebAssembly agent for Zentinel reverse proxy")]
 struct Args {
     /// Path to WebAssembly module (.wasm file)
     #[arg(long, env = "WASM_MODULE")]
@@ -47,14 +47,14 @@ async fn main() -> Result<()> {
     let log_level = if args.verbose { "debug" } else { "info" };
     tracing_subscriber::fmt()
         .with_env_filter(format!(
-            "{}={},sentinel_agent_protocol=info",
+            "{}={},zentinel_agent_protocol=info",
             env!("CARGO_CRATE_NAME"),
             log_level
         ))
         .json()
         .init();
 
-    info!("Starting Sentinel WebAssembly Agent v2");
+    info!("Starting Zentinel WebAssembly Agent v2");
 
     // Create agent
     let agent = WasmAgent::new(&args.module, args.pool_size, args.fail_open)?;
@@ -78,7 +78,7 @@ async fn main() -> Result<()> {
         .parse()
         .context("Invalid gRPC address format (expected host:port)")?;
 
-    let server = GrpcAgentServerV2::new("sentinel-wasm-agent", Box::new(agent));
+    let server = GrpcAgentServerV2::new("zentinel-wasm-agent", Box::new(agent));
 
     info!("WebAssembly agent ready and listening on gRPC");
 
