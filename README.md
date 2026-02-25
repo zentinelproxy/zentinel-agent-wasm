@@ -220,10 +220,8 @@ The agent maintains a pool of pre-initialized Wasm instances for performance. Co
 agents {
     agent "wasm" {
         type "custom"
-        transport "unix_socket" {
-            path "/var/run/zentinel/wasm.sock"
-        }
-        events ["request_headers", "response_headers"]
+        unix-socket "/var/run/zentinel/wasm.sock"
+        events "request_headers" "response_headers"
         timeout-ms 50
         failure-mode "open"
     }
