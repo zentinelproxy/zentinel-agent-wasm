@@ -8,13 +8,15 @@
 //! cd examples/wasm-module && cargo build --target wasm32-unknown-unknown --release
 //! ```
 
-use zentinel_agent_protocol::v2::{AgentClientV2, GrpcAgentServerV2};
-use zentinel_agent_protocol::{Decision, HeaderOp, RequestHeadersEvent, RequestMetadata, ResponseHeadersEvent};
-use zentinel_agent_wasm::WasmAgent;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
+use zentinel_agent_protocol::v2::{AgentClientV2, GrpcAgentServerV2};
+use zentinel_agent_protocol::{
+    Decision, HeaderOp, RequestHeadersEvent, RequestMetadata, ResponseHeadersEvent,
+};
+use zentinel_agent_wasm::WasmAgent;
 
 /// Get path to the example Wasm module
 fn example_module_path() -> PathBuf {
@@ -37,7 +39,9 @@ async fn start_test_server(fail_open: bool) -> Option<SocketAddr> {
         WasmAgent::new(example_module_path(), 2, fail_open).expect("Failed to create agent");
 
     // Bind to a random available port
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Failed to bind");
     let addr = listener.local_addr().expect("Failed to get local addr");
     drop(listener);
 
@@ -102,7 +106,10 @@ fn make_request_headers(
 }
 
 /// Create a response headers event
-fn make_response_headers(status: u16, headers: HashMap<String, Vec<String>>) -> ResponseHeadersEvent {
+fn make_response_headers(
+    status: u16,
+    headers: HashMap<String, Vec<String>>,
+) -> ResponseHeadersEvent {
     ResponseHeadersEvent {
         correlation_id: uuid::Uuid::new_v4().to_string(),
         status,
@@ -147,7 +154,10 @@ async fn test_allow_clean_request() {
         .await
         .expect("Failed to send event");
 
-    assert!(is_allow(&response.decision), "Expected Allow for clean request");
+    assert!(
+        is_allow(&response.decision),
+        "Expected Allow for clean request"
+    );
 
     // Should have X-Wasm-Processed header
     let has_processed = response.request_headers.iter().any(|h| match h {
@@ -172,7 +182,10 @@ async fn test_block_admin_without_auth() {
         .await
         .expect("Failed to send event");
 
-    assert!(is_block(&response.decision), "Expected Block for admin without auth");
+    assert!(
+        is_block(&response.decision),
+        "Expected Block for admin without auth"
+    );
     assert_eq!(get_block_status(&response.decision), Some(401));
 }
 
@@ -197,7 +210,10 @@ async fn test_allow_admin_with_auth() {
         .await
         .expect("Failed to send event");
 
-    assert!(is_allow(&response.decision), "Expected Allow for admin with auth");
+    assert!(
+        is_allow(&response.decision),
+        "Expected Allow for admin with auth"
+    );
 }
 
 // ============================================================================
@@ -219,7 +235,10 @@ async fn test_block_sql_injection_quote() {
         .await
         .expect("Failed to send event");
 
-    assert!(is_block(&response.decision), "Expected Block for SQL injection");
+    assert!(
+        is_block(&response.decision),
+        "Expected Block for SQL injection"
+    );
     assert_eq!(get_block_status(&response.decision), Some(403));
 }
 
@@ -242,7 +261,10 @@ async fn test_block_sql_injection_union() {
         .await
         .expect("Failed to send event");
 
-    assert!(is_block(&response.decision), "Expected Block for UNION injection");
+    assert!(
+        is_block(&response.decision),
+        "Expected Block for UNION injection"
+    );
 }
 
 // ============================================================================
@@ -257,18 +279,17 @@ async fn test_block_xss_script_tag() {
     };
     let client = create_client(addr).await;
 
-    let event = make_request_headers(
-        "GET",
-        "/search?q=<script>alert(1)</script>",
-        HashMap::new(),
-    );
+    let event = make_request_headers("GET", "/search?q=<script>alert(1)</script>", HashMap::new());
     let correlation_id = event.metadata.correlation_id.clone();
     let response = client
         .send_request_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
-    assert!(is_block(&response.decision), "Expected Block for XSS script tag");
+    assert!(
+        is_block(&response.decision),
+        "Expected Block for XSS script tag"
+    );
 }
 
 #[tokio::test]
@@ -279,18 +300,17 @@ async fn test_block_xss_javascript_uri() {
     };
     let client = create_client(addr).await;
 
-    let event = make_request_headers(
-        "GET",
-        "/redirect?url=javascript:alert(1)",
-        HashMap::new(),
-    );
+    let event = make_request_headers("GET", "/redirect?url=javascript:alert(1)", HashMap::new());
     let correlation_id = event.metadata.correlation_id.clone();
     let response = client
         .send_request_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
-    assert!(is_block(&response.decision), "Expected Block for javascript: URI");
+    assert!(
+        is_block(&response.decision),
+        "Expected Block for javascript: URI"
+    );
 }
 
 // ============================================================================
@@ -312,7 +332,10 @@ async fn test_block_path_traversal_plain() {
         .await
         .expect("Failed to send event");
 
-    assert!(is_block(&response.decision), "Expected Block for path traversal");
+    assert!(
+        is_block(&response.decision),
+        "Expected Block for path traversal"
+    );
 }
 
 #[tokio::test]
@@ -323,18 +346,17 @@ async fn test_block_path_traversal_encoded() {
     };
     let client = create_client(addr).await;
 
-    let event = make_request_headers(
-        "GET",
-        "/files/%2e%2e/%2e%2e/etc/passwd",
-        HashMap::new(),
-    );
+    let event = make_request_headers("GET", "/files/%2e%2e/%2e%2e/etc/passwd", HashMap::new());
     let correlation_id = event.metadata.correlation_id.clone();
     let response = client
         .send_request_headers(&correlation_id, &event)
         .await
         .expect("Failed to send event");
 
-    assert!(is_block(&response.decision), "Expected Block for encoded path traversal");
+    assert!(
+        is_block(&response.decision),
+        "Expected Block for encoded path traversal"
+    );
 }
 
 // ============================================================================
@@ -395,10 +417,7 @@ async fn test_block_nessus_scanner() {
     let client = create_client(addr).await;
 
     let mut headers = HashMap::new();
-    headers.insert(
-        "User-Agent".to_string(),
-        vec!["Nessus SOAP".to_string()],
-    );
+    headers.insert("User-Agent".to_string(), vec!["Nessus SOAP".to_string()]);
 
     let event = make_request_headers("GET", "/api/users", headers);
     let correlation_id = event.metadata.correlation_id.clone();
@@ -431,7 +450,10 @@ async fn test_allow_normal_browser() {
         .await
         .expect("Failed to send event");
 
-    assert!(is_allow(&response.decision), "Expected Allow for normal browser");
+    assert!(
+        is_allow(&response.decision),
+        "Expected Allow for normal browser"
+    );
 }
 
 // ============================================================================
@@ -520,9 +542,7 @@ async fn test_response_adds_security_headers() {
     assert!(has_frame_options, "Expected X-Frame-Options header");
 
     let has_xss = response.response_headers.iter().any(|h| match h {
-        HeaderOp::Set { name, value } => {
-            name == "X-XSS-Protection" && value == "1; mode=block"
-        }
+        HeaderOp::Set { name, value } => name == "X-XSS-Protection" && value == "1; mode=block",
         _ => false,
     });
     assert!(has_xss, "Expected X-XSS-Protection header");
@@ -633,11 +653,7 @@ async fn test_xss_blocked_includes_tag() {
     };
     let client = create_client(addr).await;
 
-    let event = make_request_headers(
-        "GET",
-        "/search?q=<script>alert(1)</script>",
-        HashMap::new(),
-    );
+    let event = make_request_headers("GET", "/search?q=<script>alert(1)</script>", HashMap::new());
     let correlation_id = event.metadata.correlation_id.clone();
     let response = client
         .send_request_headers(&correlation_id, &event)

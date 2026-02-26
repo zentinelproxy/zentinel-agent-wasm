@@ -406,31 +406,27 @@ impl WasmAgent {
 impl AgentHandlerV2 for WasmAgent {
     /// Return agent capabilities for v2 protocol.
     fn capabilities(&self) -> AgentCapabilities {
-        AgentCapabilities::new(
-            "wasm-agent",
-            "WebAssembly Agent",
-            env!("CARGO_PKG_VERSION"),
-        )
-        .with_event(EventType::RequestHeaders)
-        .with_event(EventType::ResponseHeaders)
-        .with_features(AgentFeatures {
-            streaming_body: false,
-            websocket: false,
-            guardrails: false,
-            config_push: true,
-            metrics_export: true,
-            concurrent_requests: self.pool_size as u32,
-            cancellation: false,
-            flow_control: false,
-            health_reporting: true,
-        })
-        .with_limits(AgentLimits {
-            max_body_size: 10 * 1024 * 1024, // 10MB
-            max_concurrency: self.pool_size as u32,
-            preferred_chunk_size: 64 * 1024,
-            max_memory: None,
-            max_processing_time_ms: Some(5000),
-        })
+        AgentCapabilities::new("wasm-agent", "WebAssembly Agent", env!("CARGO_PKG_VERSION"))
+            .with_event(EventType::RequestHeaders)
+            .with_event(EventType::ResponseHeaders)
+            .with_features(AgentFeatures {
+                streaming_body: false,
+                websocket: false,
+                guardrails: false,
+                config_push: true,
+                metrics_export: true,
+                concurrent_requests: self.pool_size as u32,
+                cancellation: false,
+                flow_control: false,
+                health_reporting: true,
+            })
+            .with_limits(AgentLimits {
+                max_body_size: 10 * 1024 * 1024, // 10MB
+                max_concurrency: self.pool_size as u32,
+                preferred_chunk_size: 64 * 1024,
+                max_memory: None,
+                max_processing_time_ms: Some(5000),
+            })
     }
 
     /// Handle a request headers event.

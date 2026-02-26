@@ -67,7 +67,9 @@ async fn main() -> Result<()> {
     );
 
     // Determine gRPC address (use provided or default)
-    let grpc_addr = args.grpc_address.unwrap_or_else(|| "0.0.0.0:50051".to_string());
+    let grpc_addr = args
+        .grpc_address
+        .unwrap_or_else(|| "0.0.0.0:50051".to_string());
 
     info!(
         grpc_address = %grpc_addr,
