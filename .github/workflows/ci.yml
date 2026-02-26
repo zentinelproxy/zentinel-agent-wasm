@@ -48,6 +48,8 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-clippy-
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
@@ -77,4 +79,6 @@ jobs:
       - name: Build WASM example
         working-directory: examples/wasm-module
         run: cargo build --target wasm32-unknown-unknown --release
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - run: cargo test --workspace
