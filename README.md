@@ -1,46 +1,133 @@
-# zentinel-agent-wasm
+<p align="center">
+  <a href="https://zentinelproxy.io">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/zentinelproxy/design/main/marks/lockup/zentinel-lockup-dark.svg">
+      <img alt="Zentinel" src="https://raw.githubusercontent.com/zentinelproxy/design/main/marks/lockup/zentinel-lockup-light.svg" height="52">
+    </picture>
+  </a>
+</p>
 
-WebAssembly agent for [Zentinel](https://github.com/zentinelproxy/zentinel) reverse proxy. Execute custom Wasm modules for request/response processing.
+<h3 align="center">WebAssembly agent</h3>
 
-## Features
+<p align="center">Runs your own WebAssembly module on request and response headers to allow, block, redirect or rewrite headers.</p>
 
-- Execute WebAssembly modules for request/response lifecycle events
-- Fast, secure wasmtime runtime with instance pooling
-- Language-agnostic: write modules in Rust, Go, C, AssemblyScript, or any language that compiles to Wasm
-- JSON-based data exchange between host and module
-- Header manipulation (add/remove request and response headers)
-- Audit tags for logging and analytics
-- Fail-open mode for graceful error handling
+<p align="center">
+  <a href="https://github.com/zentinelproxy/zentinel-agent-wasm/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zentinelproxy/zentinel-agent-wasm/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-9b4d8a?style=flat&labelColor=1f161e">
+  <img alt="Rust: 1.94.1+" src="https://img.shields.io/badge/rust-1.94.1%2B-f68d31?style=flat&labelColor=1f161e&logo=rust&logoColor=white">
+  <img alt="Agent protocol: v2" src="https://img.shields.io/badge/agent%20protocol-v2-f68d31?style=flat&labelColor=1f161e">
+</p>
 
-## Installation
+<p align="center">
+  <a href="https://registry.zentinelproxy.io/wasm/">Registry</a> &middot;
+  <a href="https://docs.zentinelproxy.io">Docs</a> &middot;
+  <a href="https://github.com/zentinelproxy">All repositories</a>
+</p>
 
-### Using Bundle (Recommended)
+For request logic that no existing agent covers, write it in any language that
+compiles to WebAssembly and let this agent run it under
+[wasmtime](https://wasmtime.dev/). The module receives the request or response
+headers as JSON and returns a decision as JSON. If the module fails, the agent
+answers `500` (or allows the request with `--fail-open`).
+
+## Quick start
 
 ```bash
-# Install just this agent
 zentinel bundle install wasm
 
-# Or install all bundled agents
-zentinel bundle install
+# Build the example module (blocks /admin without Authorization, simple SQLi/XSS/traversal checks,
+# adds security headers to responses)
+git clone https://github.com/zentinelproxy/zentinel-agent-wasm
+cd zentinel-agent-wasm/examples/wasm-module
+rustup target add wasm32-unknown-unknown
+cargo build --target wasm32-unknown-unknown --release
+
+zentinel-wasm-agent \
+  --grpc-address 127.0.0.1:50051 \
+  --module target/wasm32-unknown-unknown/release/example_wasm_module.wasm
 ```
 
-The bundle command downloads the correct binary for your platform and places it in the standard location. See the [bundle documentation](https://docs.zentinelproxy.io/deployment/bundle/) for details.
+Then point Zentinel at it:
 
-### Using Cargo
+```kdl
+system {
+    worker-threads 0
+}
 
-`zentinel-agent-wasm` is not published on crates.io, so `cargo install zentinel-agent-wasm` does not
-work. Install straight from the repository instead:
+listeners {
+    listener "http" {
+        address "127.0.0.1:8080"
+        protocol "http"
+    }
+}
+
+agents {
+    agent "wasm" type="custom" {
+        grpc "http://127.0.0.1:50051"
+        events "request_headers" "response_headers"
+        timeout-ms 200
+        failure-mode "closed"
+    }
+}
+
+filters {
+    filter "wasm" {
+        type "agent"
+        agent "wasm"
+        failure-mode "closed"
+    }
+}
+
+routes {
+    route "default" {
+        matches {
+            path-prefix "/"
+        }
+        upstream "backend"
+        filters "wasm"
+    }
+}
+
+upstreams {
+    upstream "backend" {
+        target "127.0.0.1:3000"
+    }
+}
+```
+
+`failure-mode "closed"` on the filter rejects requests while the agent is
+unreachable; use `"open"` to forward them unprocessed instead.
+
+```bash
+curl -i http://127.0.0.1:8080/hello   # 200, with X-Frame-Options: DENY
+curl -i http://127.0.0.1:8080/admin   # 401
+```
+
+## Install
+
+### Bundle (recommended)
+
+```bash
+zentinel bundle install wasm
+```
+
+Installs the release binary for your platform. See the
+[bundle documentation](https://docs.zentinelproxy.io/deployment/bundle/).
+
+### Cargo
+
+The crate is not on crates.io; install from the repository:
 
 ```bash
 cargo install --git https://github.com/zentinelproxy/zentinel-agent-wasm
 ```
 
-This builds and installs the `zentinel-wasm-agent` binary.
+This installs the `zentinel-wasm-agent` binary.
 
-### Prebuilt Binaries
+### Release binaries
 
-Each [release](https://github.com/zentinelproxy/zentinel-agent-wasm/releases) ships binaries
-for `linux-x86_64`, `linux-aarch64`, and `darwin-aarch64`:
+Each [release](https://github.com/zentinelproxy/zentinel-agent-wasm/releases)
+ships `linux-x86_64`, `linux-aarch64` and `darwin-aarch64`:
 
 ```bash
 VERSION=0.3.0
@@ -51,7 +138,7 @@ tar -xzf zentinel-wasm-agent.tar.gz
 sudo install -m 0755 zentinel-wasm-agent /usr/local/bin/
 ```
 
-### From Source
+### From source
 
 ```bash
 git clone https://github.com/zentinelproxy/zentinel-agent-wasm
@@ -59,248 +146,121 @@ cd zentinel-agent-wasm
 cargo build --release
 ```
 
-## Usage
+## Configuration
 
-```bash
-zentinel-wasm-agent --socket /var/run/zentinel/wasm.sock \
-  --module /etc/zentinel/modules/security.wasm
-```
+The agent is configured with command-line flags or environment variables. A
+`config { }` block on the proxy's `agent` definition does not reach it. It
+listens on gRPC only; there is no Unix-socket mode.
 
-### Command Line Options
+| Option | Environment | Default | Meaning |
+|---|---|---|---|
+| `--module` | `WASM_MODULE` | required | Path to the `.wasm` module |
+| `--grpc-address` | `WASM_GRPC_ADDRESS` | `0.0.0.0:50051` | gRPC listen address. The default listens on all interfaces; bind `127.0.0.1` when the proxy is local |
+| `--pool-size` | `WASM_POOL_SIZE` | `4` | Module instances kept for reuse |
+| `--fail-open` | `FAIL_OPEN` | `false` | On a module error, allow the request instead of answering `500` |
+| `-v`, `--verbose` | `WASM_VERBOSE` | `false` | Debug logging |
 
-| Option | Environment Variable | Description | Default |
-|--------|---------------------|-------------|---------|
-| `--socket` | `AGENT_SOCKET` | Unix socket path | `/tmp/zentinel-wasm.sock` |
-| `--module` | `WASM_MODULE` | Wasm module file (.wasm) | (required) |
-| `--pool-size` | `WASM_POOL_SIZE` | Instance pool size | `4` |
-| `--verbose` | `WASM_VERBOSE` | Enable debug logging | `false` |
-| `--fail-open` | `FAIL_OPEN` | Allow requests on module errors | `false` |
+Proxy-side agent options are in the
+[agents reference](https://docs.zentinelproxy.io/configuration/agents/).
 
-## Writing Wasm Modules
+## Writing a module
 
-### Required ABI
+### ABI
 
-Modules must export the following functions:
+The module exports its memory and these functions:
 
 ```text
-// Memory allocation (required)
-alloc(size: i32) -> i32          // Allocate `size` bytes, return pointer
-dealloc(ptr: i32, size: i32)     // Free memory at `ptr`
-
-// Request/Response handlers (at least one required)
-on_request_headers(ptr: i32, len: i32) -> i64   // Returns (result_ptr << 32) | result_len
-on_response_headers(ptr: i32, len: i32) -> i64  // Returns (result_ptr << 32) | result_len
+alloc(size: i32) -> i32                          // allocate `size` bytes, return a pointer
+dealloc(ptr: i32, size: i32)                     // free them
+on_request_headers(ptr: i32, len: i32) -> i64    // optional; returns (result_ptr << 32) | result_len
+on_response_headers(ptr: i32, len: i32) -> i64   // optional; returns (result_ptr << 32) | result_len
 ```
 
-### Data Exchange
+At least one of the two handlers must be exported. A missing handler means
+allow.
 
-The host passes JSON data to handlers and expects JSON back.
+### Input
 
-#### Request Object (on_request_headers)
+`on_request_headers` receives:
 
 ```json
 {
-    "method": "GET",
-    "uri": "/api/users?page=1",
-    "client_ip": "192.168.1.100",
-    "correlation_id": "abc123",
-    "headers": {
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0..."
-    }
+  "method": "GET",
+  "uri": "/api/users?page=1",
+  "client_ip": "192.168.1.100",
+  "correlation_id": "abc123",
+  "headers": { "user-agent": "curl/8.7.1" }
 }
 ```
 
-#### Response Object (on_response_headers)
+`on_response_headers` receives `status`, `correlation_id` and `headers`. A
+header with several values arrives as one string joined with `, `.
+
+### Result
 
 ```json
 {
-    "status": 200,
-    "correlation_id": "abc123",
-    "headers": {
-        "Content-Type": "application/json",
-        "X-Custom": "value"
-    }
+  "decision": "allow",
+  "status": 403,
+  "body": "Forbidden",
+  "add_request_headers": { "X-Processed": "true" },
+  "remove_request_headers": ["X-Debug"],
+  "add_response_headers": { "X-Frame-Options": "DENY" },
+  "remove_response_headers": ["Server"],
+  "tags": ["processed"]
 }
 ```
 
-#### Result Object (return value)
+Only `decision` is required.
 
-```json
-{
-    "decision": "allow",
-    "status": 403,
-    "body": "Forbidden",
-    "add_request_headers": {"X-Processed": "true"},
-    "remove_request_headers": ["X-Debug"],
-    "add_response_headers": {"X-Frame-Options": "DENY"},
-    "remove_response_headers": ["Server"],
-    "tags": ["processed", "logged"]
-}
-```
+| `decision` | Effect |
+|---|---|
+| `allow` (or anything unrecognized) | Continue, applying the header changes |
+| `block`, `deny` | Answer with `status` (default `403`) and `body` |
+| `redirect` | Answer with `status` (default `302`) and `Location: <body>` |
 
-### Decision Values
+`tags` become audit tags. A module error is tagged `wasm-error` (plus
+`fail-open` with `--fail-open`).
 
-| Decision | Description |
-|----------|-------------|
-| `allow` | Allow the request/response to proceed |
-| `block` | Block with given status (default: 403) and body |
-| `deny` | Same as block |
-| `redirect` | Redirect to URL in `body` field (default: 302) |
+### Example
 
-## Example: Rust Module
+[`examples/wasm-module/`](examples/wasm-module/) is a complete Rust module built
+with `serde_json`; build it with
+`cargo build --target wasm32-unknown-unknown --release`.
 
-See `examples/wasm-module/` for a complete example. Key parts:
+## How it works
 
-```rust
-use serde::{Deserialize, Serialize};
-use std::alloc::{alloc as heap_alloc, dealloc as heap_dealloc, Layout};
-
-#[derive(Deserialize)]
-struct Request {
-    method: String,
-    uri: String,
-    client_ip: String,
-    headers: std::collections::HashMap<String, String>,
-}
-
-#[derive(Serialize, Default)]
-struct Result {
-    decision: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    status: Option<u16>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    body: Option<String>,
-}
-
-#[no_mangle]
-pub extern "C" fn alloc(size: i32) -> i32 {
-    let layout = Layout::from_size_align(size as usize, 1).unwrap();
-    unsafe { heap_alloc(layout) as i32 }
-}
-
-#[no_mangle]
-pub extern "C" fn dealloc(ptr: i32, size: i32) {
-    let layout = Layout::from_size_align(size as usize, 1).unwrap();
-    unsafe { heap_dealloc(ptr as *mut u8, layout) }
-}
-
-#[no_mangle]
-pub extern "C" fn on_request_headers(ptr: i32, len: i32) -> i64 {
-    // Read input JSON from memory
-    let input = unsafe {
-        let slice = std::slice::from_raw_parts(ptr as *const u8, len as usize);
-        std::str::from_utf8(slice).unwrap()
-    };
-
-    // Parse request
-    let request: Request = serde_json::from_str(input).unwrap();
-
-    // Apply security rules
-    let result = if request.uri.contains("/admin") {
-        Result {
-            decision: "block".to_string(),
-            status: Some(403),
-            body: Some("Forbidden".to_string()),
-        }
-    } else {
-        Result {
-            decision: "allow".to_string(),
-            ..Default::default()
-        }
-    };
-
-    // Serialize and return result
-    let output = serde_json::to_string(&result).unwrap();
-    let bytes = output.as_bytes();
-    let len = bytes.len() as i32;
-    let ptr = alloc(len);
-    unsafe {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr as *mut u8, bytes.len());
-    }
-    ((ptr as i64) << 32) | (len as i64)
-}
-```
-
-Build with:
-```bash
-cargo build --target wasm32-unknown-unknown --release
-```
-
-## Building the Example Module
-
-```bash
-cd examples/wasm-module
-rustup target add wasm32-unknown-unknown
-cargo build --target wasm32-unknown-unknown --release
-```
-
-The module will be at `examples/wasm-module/target/wasm32-unknown-unknown/release/example_wasm_module.wasm`.
-
-## Instance Pooling
-
-The agent maintains a pool of pre-initialized Wasm instances for performance. Configure with `--pool-size`:
-
-- **Pool size 1**: Minimum memory, sequential processing
-- **Pool size 4** (default): Good balance for most workloads
-- **Pool size 8+**: High-concurrency scenarios
-
-## Zentinel Proxy Configuration
-
-```kdl
-agents {
-    agent "wasm" {
-        type "custom"
-        transport "unix_socket" {
-            path "/var/run/zentinel/wasm.sock"
-        }
-        events "request_headers" "response_headers"
-        timeout-ms 50
-        failure-mode "open"
-    }
-}
-```
-
-## Error Handling
-
-When `--fail-open` is enabled, module errors will:
-- Log the error
-- Allow the request to proceed
-- Add `wasm-error` and `fail-open` tags to audit metadata
-
-When `--fail-open` is disabled (default), module errors will:
-- Log the error
-- Block the request with 500 status
-- Add `wasm-error` tag to audit metadata
-
-## Comparison with Other Agents
-
-| Feature | zentinel-agent-wasm | zentinel-agent-js | zentinel-agent-lua |
-|---------|--------------------|--------------------|-------------------|
-| Language | Any (Rust, Go, C, etc.) | JavaScript | Lua |
-| Runtime | wasmtime | QuickJS | mlua |
-| Performance | Fastest | Fast | Fast |
-| Sandboxing | Strong (Wasm isolation) | Basic | Comprehensive |
-| Ecosystem | Wasm-compatible libraries | Limited | Lua libraries |
-| Complexity | Higher (compilation required) | Lower | Lower |
-
-Use `zentinel-agent-wasm` for:
-- Maximum performance requirements
-- Existing Rust/Go/C code that needs minimal porting
-- Strong isolation between modules
-- Memory-safe execution
+The agent compiles the module once at startup and keeps up to `--pool-size`
+instances for reuse; more are created on demand under load. An instance is
+reused across requests, so module globals persist between calls. No fuel or
+epoch limit is set, so a module that loops forever holds its request until the
+proxy's `timeout-ms` gives up on it.
 
 ## Development
 
 ```bash
-# Run tests (requires example module)
-cd examples/wasm-module && cargo build --target wasm32-unknown-unknown --release && cd ../..
+# The tests load the example module
+(cd examples/wasm-module && cargo build --target wasm32-unknown-unknown --release)
+cargo fmt --all --check
+cargo clippy --all-targets -- -D warnings
 cargo test
-
-# Run with debug logging
-RUST_LOG=debug cargo run -- --socket /tmp/test.sock --module ./examples/wasm-module/target/wasm32-unknown-unknown/release/example_wasm_module.wasm --verbose
 ```
+
+Building needs Rust 1.94.1+.
+
+## Related
+
+- [Registry page](https://registry.zentinelproxy.io/wasm/)
+- [zentinel-agent-js](https://github.com/zentinelproxy/zentinel-agent-js) and [zentinel-agent-lua](https://github.com/zentinelproxy/zentinel-agent-lua): scripted agents without a compile step
+- [Agent protocol v2](https://docs.zentinelproxy.io/agents/v2/)
+- [Zentinel](https://github.com/zentinelproxy/zentinel)
 
 ## License
 
-Apache-2.0
+Apache-2.0, see [`LICENSE`](LICENSE).
+
+---
+
+<p align="center">
+  <sub>Part of <a href="https://zentinelproxy.io">Zentinel</a>, the security-first reverse proxy. The shisa guards the gate.</sub>
+</p>
