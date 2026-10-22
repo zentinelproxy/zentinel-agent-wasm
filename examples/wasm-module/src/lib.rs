@@ -152,6 +152,15 @@ fn write_result(output: &str) -> i64 {
     ((ptr as i64) << 32) | (len as i64)
 }
 
+/// Look up a header by name, ignoring case: the proxy passes header names as
+/// it received them, which for HTTP/2 and most HTTP/1.1 clients is lowercase.
+fn header<'a>(headers: &'a HashMap<String, String>, name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.as_str())
+}
+
 /// Process request and return decision
 fn process_request(request: &Request) -> Result {
     let uri_lower = request.uri.to_lowercase();
@@ -159,7 +168,7 @@ fn process_request(request: &Request) -> Result {
 
     // Block admin access without auth
     if uri_lower.contains("/admin") {
-        if !request.headers.contains_key("Authorization") {
+        if header(&request.headers, "Authorization").is_none() {
             return Result {
                 decision: "block".to_string(),
                 status: Some(401),
@@ -206,7 +215,7 @@ fn process_request(request: &Request) -> Result {
     }
 
     // Check for scanner user agents
-    if let Some(ua) = request.headers.get("User-Agent") {
+    if let Some(ua) = header(&request.headers, "User-Agent") {
         let ua_lower = ua.to_lowercase();
         if ua_lower.contains("sqlmap") || ua_lower.contains("nikto") || ua_lower.contains("nessus")
         {
