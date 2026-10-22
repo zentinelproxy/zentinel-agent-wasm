@@ -43,7 +43,7 @@ rustup target add wasm32-unknown-unknown
 cargo build --target wasm32-unknown-unknown --release
 
 zentinel-wasm-agent \
-  --grpc-address 127.0.0.1:50051 \
+  --socket /tmp/zentinel-wasm.sock \
   --module target/wasm32-unknown-unknown/release/example_wasm_module.wasm
 ```
 
@@ -63,7 +63,7 @@ listeners {
 
 agents {
     agent "wasm" type="custom" {
-        grpc "http://127.0.0.1:50051"
+        unix-socket "/tmp/zentinel-wasm.sock"
         events "request_headers" "response_headers"
         timeout-ms 200
         failure-mode "closed"
@@ -150,12 +150,14 @@ cargo build --release
 
 The agent is configured with command-line flags or environment variables. A
 `config { }` block on the proxy's `agent` definition does not reach it. It
-listens on gRPC only; there is no Unix-socket mode.
+serves agent protocol v2 on a Unix socket, or on gRPC with `--grpc-address`
+(up to 0.3.0 it served gRPC only, on `0.0.0.0:50051` by default).
 
 | Option | Environment | Default | Meaning |
 |---|---|---|---|
 | `--module` | `WASM_MODULE` | required | Path to the `.wasm` module |
-| `--grpc-address` | `WASM_GRPC_ADDRESS` | `0.0.0.0:50051` | gRPC listen address. The default listens on all interfaces; bind `127.0.0.1` when the proxy is local |
+| `--socket` | `AGENT_SOCKET` | `/tmp/zentinel-wasm.sock` | Unix socket to serve agent protocol v2 on |
+| `--grpc-address` | `WASM_GRPC_ADDRESS` | unset | Serve gRPC on this address (e.g. `127.0.0.1:50051`) instead of the Unix socket; the proxy then connects with `grpc "http://..."` |
 | `--pool-size` | `WASM_POOL_SIZE` | `4` | Module instances kept for reuse |
 | `--fail-open` | `FAIL_OPEN` | `false` | On a module error, allow the request instead of answering `500` |
 | `-v`, `--verbose` | `WASM_VERBOSE` | `false` | Debug logging |
@@ -226,7 +228,9 @@ Only `decision` is required.
 
 [`examples/wasm-module/`](examples/wasm-module/) is a complete Rust module built
 with `serde_json`; build it with
-`cargo build --target wasm32-unknown-unknown --release`.
+`cargo build --target wasm32-unknown-unknown --release`. Header names reach the
+module as the proxy received them, which is usually lowercase, so look them up
+without regard to case (the example does).
 
 ## How it works
 
@@ -247,6 +251,19 @@ cargo test
 ```
 
 Building needs Rust 1.94.1+.
+
+`scripts/smoke-test.sh` builds the example module and runs the release binary
+behind a real Zentinel with the shared harness (`agent-smoke/smoke.py` from
+[zentinelproxy/.github](https://github.com/zentinelproxy/.github)): an
+ordinary request is forwarded with `X-Wasm-Processed: true`, `/admin` without
+an `Authorization` header gets `401`, a scanner `User-Agent` and a
+SQL-injection-looking query get `403`, and stopping the agent changes the
+answer. CI runs it on every push; a release runs it on every platform before
+anything is published.
+
+```bash
+AGENT_SMOKE=../.github/agent-smoke/smoke.py scripts/smoke-test.sh target/release/zentinel-wasm-agent ./zentinel
+```
 
 ## Related
 

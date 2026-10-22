@@ -82,3 +82,22 @@ jobs:
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - run: cargo test --workspace
+
+  # The release pipeline on one platform, without publishing: builds the
+  # release binary with --locked and runs scripts/smoke-test.sh behind the
+  # latest Zentinel release, so a change that would break a release fails
+  # here first.
+  smoke:
+    name: Smoke
+    uses: zentinelproxy/.github/.github/workflows/agent-release.yml@v1
+    permissions:
+      contents: read
+    with:
+      binary: zentinel-wasm-agent
+      # scripts/smoke-test.sh builds the example guest module.
+      setup-linux: rustup target add wasm32-unknown-unknown
+      setup-macos: rustup target add wasm32-unknown-unknown
+      smoke-command: scripts/smoke-test.sh
+      harness-ref: v1
+      platforms: '["linux-x86_64"]'
+      cache: true
