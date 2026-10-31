@@ -137,8 +137,12 @@ impl WasmAgent {
         config.wasm_multi_memory(true);
         config.wasm_bulk_memory(true);
 
-        let engine = Engine::new(&config).context("Failed to create Wasm engine")?;
-        let module = Module::new(&engine, module_bytes).context("Failed to compile Wasm module")?;
+        let engine = Engine::new(&config)
+            .map_err(anyhow::Error::from)
+            .context("Failed to create Wasm engine")?;
+        let module = Module::new(&engine, module_bytes)
+            .map_err(anyhow::Error::from)
+            .context("Failed to compile Wasm module")?;
 
         info!("Wasm module compiled successfully");
 
@@ -161,6 +165,8 @@ impl WasmAgent {
     fn create_instance(&self) -> Result<WasmInstance> {
         let mut store = Store::new(&self.engine, ());
         let instance = Instance::new(&mut store, &self.module, &[])
+            // wasmtime 50 has its own error type (anyhow only via its feature)
+            .map_err(anyhow::Error::from)
             .context("Failed to instantiate Wasm module")?;
 
         // Get memory export
@@ -171,10 +177,12 @@ impl WasmAgent {
         // Get required exports
         let alloc = instance
             .get_typed_func::<i32, i32>(&mut store, "alloc")
+            .map_err(anyhow::Error::from)
             .context("Wasm module must export 'alloc(i32) -> i32'")?;
 
         let dealloc = instance
             .get_typed_func::<(i32, i32), ()>(&mut store, "dealloc")
+            .map_err(anyhow::Error::from)
             .context("Wasm module must export 'dealloc(i32, i32)'")?;
 
         // Get optional handler exports
@@ -265,6 +273,8 @@ impl WasmAgent {
         let input_ptr = instance
             .alloc
             .call(&mut instance.store, input_len)
+            // wasmtime 50 has its own error type (anyhow only via its feature)
+            .map_err(anyhow::Error::from)
             .context("Failed to allocate input memory")?;
 
         // Write input to Wasm memory
@@ -276,6 +286,8 @@ impl WasmAgent {
         // Call the handler
         let result = handler
             .call(&mut instance.store, (input_ptr, input_len))
+            // wasmtime 50 has its own error type (anyhow only via its feature)
+            .map_err(anyhow::Error::from)
             .context("Wasm handler call failed")?;
 
         // Free input memory
